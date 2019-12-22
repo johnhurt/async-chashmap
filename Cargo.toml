@@ -15,5 +15,4 @@ future-parking_lot = "0.3.3"
 futures = "0.3.1"
 parking_lot = { version = "0.9.0", features = [ "owning_ref" ] }
 owning_ref = "0.4"
-# stable_deref_trait = "1.1.1"
 lock_api = "0.3.2"

@@ -8,10 +8,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::thread;
 use std::cell::RefCell;
 use std::sync::Arc;
-use CHashMap;
+use std::thread;
+use crate::CHashMap;
 
 #[test]
 fn spam_insert() {
@@ -319,7 +319,7 @@ thread_local! { static DROP_VECTOR: RefCell<Vec<isize>> = RefCell::new(Vec::new(
 
 #[derive(Hash, PartialEq, Eq)]
 struct Dropable {
-    k: usize
+    k: usize,
 }
 
 impl Dropable {
@@ -363,7 +363,7 @@ fn drops() {
 
         for i in 0..100 {
             let d1 = Dropable::new(i);
-            let d2 = Dropable::new(i+100);
+            let d2 = Dropable::new(i + 100);
             m.insert(d1, d2);
         }
 
@@ -381,19 +381,19 @@ fn drops() {
 
             DROP_VECTOR.with(|v| {
                 assert_eq!(v.borrow()[i], 1);
-                assert_eq!(v.borrow()[i+100], 1);
+                assert_eq!(v.borrow()[i + 100], 1);
             });
         }
 
         DROP_VECTOR.with(|v| {
             for i in 0..50 {
                 assert_eq!(v.borrow()[i], 0);
-                assert_eq!(v.borrow()[i+100], 0);
+                assert_eq!(v.borrow()[i + 100], 0);
             }
 
             for i in 50..100 {
                 assert_eq!(v.borrow()[i], 1);
-                assert_eq!(v.borrow()[i+100], 1);
+                assert_eq!(v.borrow()[i + 100], 1);
             }
         });
     }
@@ -422,7 +422,7 @@ fn move_iter_drops() {
 
         for i in 0..100 {
             let d1 = Dropable::new(i);
-            let d2 = Dropable::new(i+100);
+            let d2 = Dropable::new(i + 100);
             hm.insert(d1, d2);
         }
 
@@ -450,13 +450,9 @@ fn move_iter_drops() {
         for _ in half.by_ref() {}
 
         DROP_VECTOR.with(|v| {
-            let nk = (0..100).filter(|&i| {
-                v.borrow()[i] == 1
-            }).count();
+            let nk = (0..100).filter(|&i| v.borrow()[i] == 1).count();
 
-            let nv = (0..100).filter(|&i| {
-                v.borrow()[i+100] == 1
-            }).count();
+            let nv = (0..100).filter(|&i| v.borrow()[i + 100] == 1).count();
 
             assert_eq!(nk, 50);
             assert_eq!(nv, 50);
@@ -487,12 +483,12 @@ fn lots_of_insertions() {
         for i in 1..1001 {
             assert!(m.insert(i, i).is_none());
 
-            for j in 1..i+1 {
+            for j in 1..i + 1 {
                 let r = m.get(&j);
                 assert_eq!(*r.unwrap(), j);
             }
 
-            for j in i+1..1001 {
+            for j in i + 1..1001 {
                 let r = m.get(&j);
                 assert_eq!(r, None);
             }
@@ -506,11 +502,11 @@ fn lots_of_insertions() {
         for i in 1..1001 {
             assert!(m.remove(&i).is_some());
 
-            for j in 1..i+1 {
+            for j in 1..i + 1 {
                 assert!(!m.contains_key(&j));
             }
 
-            for j in i+1..1001 {
+            for j in i + 1..1001 {
                 assert!(m.contains_key(&j));
             }
         }
@@ -546,7 +542,8 @@ fn find_mut() {
     assert!(m.insert(5, 14).is_none());
     let new = 100;
     match m.get_mut(&5) {
-        None => panic!(), Some(mut x) => *x = new
+        None => panic!(),
+        Some(mut x) => *x = new,
     }
     assert_eq!(*m.get(&5).unwrap(), new);
 }
@@ -617,7 +614,7 @@ fn find() {
     let lock = m.get(&1);
     match lock {
         None => panic!(),
-        Some(v) => assert_eq!(*v, 2)
+        Some(v) => assert_eq!(*v, 2),
     }
 }
 
