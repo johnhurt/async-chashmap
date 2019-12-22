@@ -492,6 +492,7 @@ impl<K, V> IntoIterator for Table<K, V> {
 ///
 /// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
 /// on drop.
+#[allow(dead_code)]
 pub struct ReadGuard<'a, K: 'a, V: 'a> {
     table_lock: RwLockReadGuard<'a, Table<K, V>>,
     inner: OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>,
@@ -522,6 +523,7 @@ impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for ReadGuard<'a, K, V> {
 ///
 /// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
 /// on drop.
+#[allow(dead_code)]
 pub struct WriteGuard<'a, K: 'a, V: 'a> {
     table_lock: RwLockReadGuard<'a, Table<K, V>>,
     bucket_lock: RwLockWriteGuard<'a, Bucket<K, V>>,
@@ -750,7 +752,6 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
             return None
         };
 
-
         Some(WriteGuard {
             table_lock,
             bucket_lock,
@@ -813,7 +814,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
             *bucket = Bucket::Contains(key, val);
         }
         // Expand the table (we know beforehand that the entry didn't already exist).
-        self.expand(lock);
+        self.expand(lock).await;
     }
 
     /// Replace an existing entry, or insert a new one.
@@ -834,7 +835,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
 
         // Expand the table if no bucket was overwritten (i.e. the entry is fresh).
         if ret.is_none() {
-            self.expand(lock);
+            self.expand(lock).await;
         }
 
         ret
@@ -870,7 +871,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         }
 
         // Expand the table (this will only happen if the function haven't returned yet).
-        self.expand(lock);
+        self.expand(lock).await;
     }
 
     /// Map or insert an entry.
@@ -918,7 +919,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         }
 
         // A new entry was inserted, so naturally, we expand the table.
-        self.expand(lock);
+        self.expand(lock).await;
     }
 
     /// Remove an entry.
@@ -999,7 +1000,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
             // Drop the read lock to avoid deadlocks when acquiring the write lock.
             drop(lock);
             // Reserve 1 entry in space (the function will handle the excessive space logic).
-            self.reserve(1);
+            self.reserve(1).await;
         }
     }
 }

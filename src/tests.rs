@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::thread;
 use crate::CHashMap;
+use futures::executor::block_on;
 
 #[test]
 fn spam_insert() {
@@ -22,8 +23,8 @@ fn spam_insert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 1000..(t + 1) * 1000 {
-                assert!(m.insert(i, !i).is_none());
-                assert_eq!(m.insert(i, i).unwrap(), !i);
+                assert!(block_on(m.insert(i, !i)).is_none());
+                assert_eq!(block_on(m.insert(i, i)).unwrap(), !i);
             }
         }));
     }
@@ -36,7 +37,7 @@ fn spam_insert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
+                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
             }
         }));
     }
@@ -55,7 +56,7 @@ fn spam_insert_new() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 1000..(t + 1) * 1000 {
-                m.insert_new(i, i);
+                block_on(m.insert_new(i, i));
             }
         }));
     }
@@ -68,7 +69,7 @@ fn spam_insert_new() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
+                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
             }
         }));
     }
@@ -87,8 +88,8 @@ fn spam_upsert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 1000..(t + 1) * 1000 {
-                m.upsert(i, || !i, |_| unreachable!());
-                m.upsert(i, || unreachable!(), |x| *x = !*x);
+                block_on(m.upsert(i, || !i, |_| unreachable!()));
+                block_on(m.upsert(i, || unreachable!(), |x| *x = !*x));
             }
         }));
     }
@@ -101,7 +102,7 @@ fn spam_upsert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
+                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
             }
         }));
     }
@@ -120,14 +121,14 @@ fn spam_alter() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 1000..(t + 1) * 1000 {
-                m.alter(i, |x| {
+                block_on(m.alter(i, |x| {
                     assert!(x.is_none());
                     Some(!i)
-                });
-                m.alter(i, |x| {
+                }));
+                block_on(m.alter(i, |x| {
                     assert_eq!(x, Some(!i));
                     Some(!x.unwrap())
-                });
+                }));
             }
         }));
     }
@@ -140,9 +141,9 @@ fn spam_alter() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*m.get(&i).unwrap(), i);
-                m.alter(i, |_| None);
-                assert!(m.get(&i).is_none());
+                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
+                block_on(m.alter(i, |_| None));
+                assert!(block_on(m.get(&i)).is_none());
             }
         }));
     }
@@ -156,21 +157,21 @@ fn spam_alter() {
 fn lock_compete() {
     let m = Arc::new(CHashMap::new());
 
-    m.insert("hey", "nah");
+    block_on(m.insert("hey", "nah"));
 
     let k = m.clone();
     let a = thread::spawn(move || {
-        *k.get_mut(&"hey").unwrap() = "hi";
+        *block_on(k.get_mut(&"hey")).unwrap() = "hi";
     });
     let k = m.clone();
     let b = thread::spawn(move || {
-        *k.get_mut(&"hey").unwrap() = "hi";
+        *block_on(k.get_mut(&"hey")).unwrap() = "hi";
     });
 
     a.join().unwrap();
     b.join().unwrap();
 
-    assert_eq!(*m.get(&"hey").unwrap(), "hi");
+    assert_eq!(*block_on(m.get(&"hey")).unwrap(), "hi");
 }
 
 #[test]
@@ -178,14 +179,14 @@ fn simultanous_reserve() {
     let m = Arc::new(CHashMap::new());
     let mut joins = Vec::new();
 
-    m.insert(1, 2);
-    m.insert(3, 6);
-    m.insert(8, 16);
+    block_on(m.insert(1, 2));
+    block_on(m.insert(3, 6));
+    block_on(m.insert(8, 16));
 
     for _ in 0..10 {
         let m = m.clone();
         joins.push(thread::spawn(move || {
-            m.reserve(1000);
+            block_on(m.reserve(1000));
         }));
     }
 
@@ -193,119 +194,119 @@ fn simultanous_reserve() {
         j.join().unwrap();
     }
 
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&3).unwrap(), 6);
-    assert_eq!(*m.get(&8).unwrap(), 16);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&3)).unwrap(), 6);
+    assert_eq!(*block_on(m.get(&8)).unwrap(), 16);
 }
 
 #[test]
 fn create_capacity_zero() {
     let m = CHashMap::with_capacity(0);
 
-    assert!(m.insert(1, 1).is_none());
+    assert!(block_on(m.insert(1, 1)).is_none());
 
-    assert!(m.contains_key(&1));
-    assert!(!m.contains_key(&0));
+    assert!(block_on(m.contains_key(&1)));
+    assert!(!block_on(m.contains_key(&0)));
 }
 
 #[test]
 fn insert() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    assert!(m.insert(1, 2).is_none());
+    assert!(block_on(m.insert(1, 2)).is_none());
     assert_eq!(m.len(), 1);
-    assert!(m.insert(2, 4).is_none());
+    assert!(block_on(m.insert(2, 4)).is_none());
     assert_eq!(m.len(), 2);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&2).unwrap(), 4);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&2)).unwrap(), 4);
 }
 
 #[test]
 fn upsert() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    m.upsert(1, || 2, |_| unreachable!());
+    block_on(m.upsert(1, || 2, |_| unreachable!()));
     assert_eq!(m.len(), 1);
-    m.upsert(2, || 4, |_| unreachable!());
+    block_on(m.upsert(2, || 4, |_| unreachable!()));
     assert_eq!(m.len(), 2);
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&2).unwrap(), 4);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&2)).unwrap(), 4);
 }
 
 #[test]
 fn upsert_update() {
     let m = CHashMap::new();
-    m.insert(1, 2);
-    m.upsert(1, || unreachable!(), |x| *x += 2);
-    m.insert(2, 3);
-    m.upsert(2, || unreachable!(), |x| *x += 3);
-    assert_eq!(*m.get(&1).unwrap(), 4);
-    assert_eq!(*m.get(&2).unwrap(), 6);
+    block_on(m.insert(1, 2));
+    block_on(m.upsert(1, || unreachable!(), |x| *x += 2));
+    block_on(m.insert(2, 3));
+    block_on(m.upsert(2, || unreachable!(), |x| *x += 3));
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 4);
+    assert_eq!(*block_on(m.get(&2)).unwrap(), 6);
 }
 
 #[test]
 fn alter_string() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    m.alter(1, |_| Some(String::new()));
+    block_on(m.alter(1, |_| Some(String::new())));
     assert_eq!(m.len(), 1);
-    m.alter(1, |x| {
+    block_on(m.alter(1, |x| {
         let mut x = x.unwrap();
         x.push('a');
         Some(x)
-    });
+    }));
     assert_eq!(m.len(), 1);
-    assert_eq!(&*m.get(&1).unwrap(), "a");
+    assert_eq!(&*block_on(m.get(&1)).unwrap(), "a");
 }
 
 #[test]
 fn clear() {
     let m = CHashMap::new();
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(2, 4).is_none());
+    assert!(block_on(m.insert(1, 2)).is_none());
+    assert!(block_on(m.insert(2, 4)).is_none());
     assert_eq!(m.len(), 2);
 
-    let om = m.clear();
+    let om = block_on(m.clear());
     assert_eq!(om.len(), 2);
-    assert_eq!(*om.get(&1).unwrap(), 2);
-    assert_eq!(*om.get(&2).unwrap(), 4);
+    assert_eq!(*block_on(om.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(om.get(&2)).unwrap(), 4);
 
     assert!(m.is_empty());
     assert_eq!(m.len(), 0);
 
-    assert_eq!(m.get(&1), None);
-    assert_eq!(m.get(&2), None);
+    assert_eq!(block_on(m.get(&1)), None);
+    assert_eq!(block_on(m.get(&2)), None);
 }
 
 #[test]
 fn clear_with_retain() {
     let m = CHashMap::new();
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(2, 4).is_none());
+    assert!(block_on(m.insert(1, 2)).is_none());
+    assert!(block_on(m.insert(2, 4)).is_none());
     assert_eq!(m.len(), 2);
 
-    m.retain(|_, _| false);
+    block_on(m.retain(|_, _| false));
 
     assert!(m.is_empty());
     assert_eq!(m.len(), 0);
 
-    assert_eq!(m.get(&1), None);
-    assert_eq!(m.get(&2), None);
+    assert_eq!(block_on(m.get(&1)), None);
+    assert_eq!(block_on(m.get(&2)), None);
 }
 
 #[test]
 fn retain() {
     let m = CHashMap::new();
-    m.insert(1, 8);
-    m.insert(2, 9);
-    m.insert(3, 4);
-    m.insert(4, 7);
-    m.insert(5, 2);
-    m.insert(6, 5);
-    m.insert(7, 2);
-    m.insert(8, 3);
+    block_on(m.insert(1, 8));
+    block_on(m.insert(2, 9));
+    block_on(m.insert(3, 4));
+    block_on(m.insert(4, 7));
+    block_on(m.insert(5, 2));
+    block_on(m.insert(6, 5));
+    block_on(m.insert(7, 2));
+    block_on(m.insert(8, 3));
 
-    m.retain(|key, val| key & 1 == 0 && val & 1 == 1);
+    block_on(m.retain(|key, val| key & 1 == 0 && val & 1 == 1));
 
     assert_eq!(m.len(), 4);
 
@@ -364,7 +365,7 @@ fn drops() {
         for i in 0..100 {
             let d1 = Dropable::new(i);
             let d2 = Dropable::new(i + 100);
-            m.insert(d1, d2);
+            block_on(m.insert(d1, d2));
         }
 
         DROP_VECTOR.with(|v| {
@@ -375,7 +376,7 @@ fn drops() {
 
         for i in 0..50 {
             let k = Dropable::new(i);
-            let v = m.remove(&k);
+            let v = block_on(m.remove(&k));
 
             assert!(v.is_some());
 
@@ -423,7 +424,7 @@ fn move_iter_drops() {
         for i in 0..100 {
             let d1 = Dropable::new(i);
             let d2 = Dropable::new(i + 100);
-            hm.insert(d1, d2);
+            block_on(hm.insert(d1, d2));
         }
 
         DROP_VECTOR.with(|v| {
@@ -434,9 +435,6 @@ fn move_iter_drops() {
 
         hm
     };
-
-    // By the way, ensure that cloning doesn't screw up the dropping.
-    drop(hm.clone());
 
     {
         let mut half = hm.into_iter().take(50);
@@ -469,7 +467,7 @@ fn move_iter_drops() {
 #[test]
 fn empty_pop() {
     let m: CHashMap<isize, bool> = CHashMap::new();
-    assert_eq!(m.remove(&0), None);
+    assert_eq!(block_on(m.remove(&0)), None);
 }
 
 #[test]
@@ -481,54 +479,54 @@ fn lots_of_insertions() {
         assert!(m.is_empty());
 
         for i in 1..1001 {
-            assert!(m.insert(i, i).is_none());
+            assert!(block_on(m.insert(i, i)).is_none());
 
             for j in 1..i + 1 {
-                let r = m.get(&j);
+                let r = block_on(m.get(&j));
                 assert_eq!(*r.unwrap(), j);
             }
 
             for j in i + 1..1001 {
-                let r = m.get(&j);
+                let r = block_on(m.get(&j));
                 assert_eq!(r, None);
             }
         }
 
         for i in 1001..2001 {
-            assert!(!m.contains_key(&i));
+            assert!(!block_on(m.contains_key(&i)));
         }
 
         // remove forwards
         for i in 1..1001 {
-            assert!(m.remove(&i).is_some());
+            assert!(block_on(m.remove(&i)).is_some());
 
             for j in 1..i + 1 {
-                assert!(!m.contains_key(&j));
+                assert!(!block_on(m.contains_key(&j)));
             }
 
             for j in i + 1..1001 {
-                assert!(m.contains_key(&j));
+                assert!(block_on(m.contains_key(&j)));
             }
         }
 
         for i in 1..1001 {
-            assert!(!m.contains_key(&i));
+            assert!(!block_on(m.contains_key(&i)));
         }
 
         for i in 1..1001 {
-            assert!(m.insert(i, i).is_none());
+            assert!(block_on(m.insert(i, i)).is_none());
         }
 
         // remove backwards
         for i in (1..1001).rev() {
-            assert!(m.remove(&i).is_some());
+            assert!(block_on(m.remove(&i)).is_some());
 
             for j in i..1001 {
-                assert!(!m.contains_key(&j));
+                assert!(!block_on(m.contains_key(&j)));
             }
 
             for j in 1..i {
-                assert!(m.contains_key(&j));
+                assert!(block_on(m.contains_key(&j)));
             }
         }
     }
@@ -537,81 +535,81 @@ fn lots_of_insertions() {
 #[test]
 fn find_mut() {
     let m = CHashMap::new();
-    assert!(m.insert(1, 12).is_none());
-    assert!(m.insert(2, 8).is_none());
-    assert!(m.insert(5, 14).is_none());
+    assert!(block_on(m.insert(1, 12)).is_none());
+    assert!(block_on(m.insert(2, 8)).is_none());
+    assert!(block_on(m.insert(5, 14)).is_none());
     let new = 100;
-    match m.get_mut(&5) {
+    match block_on(m.get_mut(&5)) {
         None => panic!(),
         Some(mut x) => *x = new,
     }
-    assert_eq!(*m.get(&5).unwrap(), new);
+    assert_eq!(*block_on(m.get(&5)).unwrap(), new);
 }
 
 #[test]
 fn insert_overwrite() {
     let m = CHashMap::new();
     assert_eq!(m.len(), 0);
-    assert!(m.insert(1, 2).is_none());
+    assert!(block_on(m.insert(1, 2)).is_none());
     assert_eq!(m.len(), 1);
-    assert_eq!(*m.get(&1).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
     assert_eq!(m.len(), 1);
-    assert!(!m.insert(1, 3).is_none());
+    assert!(!block_on(m.insert(1, 3)).is_none());
     assert_eq!(m.len(), 1);
-    assert_eq!(*m.get(&1).unwrap(), 3);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 3);
 }
 
 #[test]
 fn insert_conflicts() {
     let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
-    assert!(m.insert(5, 3).is_none());
-    assert!(m.insert(9, 4).is_none());
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert_eq!(*m.get(&1).unwrap(), 2);
+    assert!(block_on(m.insert(1, 2)).is_none());
+    assert!(block_on(m.insert(5, 3)).is_none());
+    assert!(block_on(m.insert(9, 4)).is_none());
+    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
+    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
 }
 
 #[test]
 fn conflict_remove() {
     let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert!(m.insert(5, 3).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert!(m.insert(9, 4).is_none());
-    assert_eq!(*m.get(&1).unwrap(), 2);
-    assert_eq!(*m.get(&5).unwrap(), 3);
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert!(m.remove(&1).is_some());
-    assert_eq!(*m.get(&9).unwrap(), 4);
-    assert_eq!(*m.get(&5).unwrap(), 3);
+    assert!(block_on(m.insert(1, 2)).is_none());
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert!(block_on(m.insert(5, 3)).is_none());
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
+    assert!(block_on(m.insert(9, 4)).is_none());
+    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
+    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
+    assert!(block_on(m.remove(&1)).is_some());
+    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
+    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
 }
 
 #[test]
 fn is_empty() {
     let m = CHashMap::with_capacity(4);
-    assert!(m.insert(1, 2).is_none());
+    assert!(block_on(m.insert(1, 2)).is_none());
     assert!(!m.is_empty());
-    assert!(m.remove(&1).is_some());
+    assert!(block_on(m.remove(&1)).is_some());
     assert!(m.is_empty());
 }
 
 #[test]
 fn pop() {
     let m = CHashMap::new();
-    m.insert(1, 2);
-    assert_eq!(m.remove(&1), Some(2));
-    assert_eq!(m.remove(&1), None);
+    block_on(m.insert(1, 2));
+    assert_eq!(block_on(m.remove(&1)), Some(2));
+    assert_eq!(block_on(m.remove(&1)), None);
 }
 
 #[test]
 fn find() {
     let m = CHashMap::new();
-    assert!(m.get(&1).is_none());
-    m.insert(1, 2);
-    let lock = m.get(&1);
+    assert!(block_on(m.get(&1)).is_none());
+    block_on(m.insert(1, 2));
+    let lock = block_on(m.get(&1));
     match lock {
         None => panic!(),
         Some(v) => assert_eq!(*v, 2),
@@ -621,38 +619,38 @@ fn find() {
 #[test]
 fn reserve_shrink_to_fit() {
     let m = CHashMap::new();
-    m.insert(0, 0);
-    m.remove(&0);
-    assert!(m.capacity() >= m.len());
+    block_on(m.insert(0, 0));
+    block_on(m.remove(&0));
+    assert!(block_on(m.capacity()) >= m.len());
     for i in 0..128 {
-        m.insert(i, i);
+        block_on(m.insert(i, i));
     }
-    m.reserve(256);
+    block_on(m.reserve(256));
 
-    let usable_cap = m.capacity();
+    let usable_cap = block_on(m.capacity());
     for i in 128..(128 + 256) {
-        m.insert(i, i);
-        assert_eq!(m.capacity(), usable_cap);
+        block_on(m.insert(i, i));
+        assert_eq!(block_on(m.capacity()), usable_cap);
     }
 
     for i in 100..(128 + 256) {
-        assert_eq!(m.remove(&i), Some(i));
+        assert_eq!(block_on(m.remove(&i)), Some(i));
     }
-    m.shrink_to_fit();
+    block_on(m.shrink_to_fit());
 
     assert_eq!(m.len(), 100);
     assert!(!m.is_empty());
-    assert!(m.capacity() >= m.len());
+    assert!(block_on(m.capacity()) >= m.len());
 
     for i in 0..100 {
-        assert_eq!(m.remove(&i), Some(i));
+        assert_eq!(block_on(m.remove(&i)), Some(i));
     }
-    m.shrink_to_fit();
-    m.insert(0, 0);
+    block_on(m.shrink_to_fit());
+    block_on(m.insert(0, 0));
 
     assert_eq!(m.len(), 1);
-    assert!(m.capacity() >= m.len());
-    assert_eq!(m.remove(&0), Some(0));
+    assert!(block_on(m.capacity()) >= m.len());
+    assert_eq!(block_on(m.remove(&0)), Some(0));
 }
 
 #[test]
@@ -662,7 +660,7 @@ fn from_iter() {
     let map: CHashMap<_, _> = xs.iter().cloned().collect();
 
     for &(k, v) in &xs {
-        assert_eq!(*map.get(&k).unwrap(), v);
+        assert_eq!(*block_on(map.get(&k)).unwrap(), v);
     }
 }
 
@@ -672,37 +670,37 @@ fn capacity_not_less_than_len() {
     let mut item = 0;
 
     for _ in 0..116 {
-        a.insert(item, 0);
+        block_on(a.insert(item, 0));
         item += 1;
     }
 
-    assert!(a.capacity() > a.len());
+    assert!(block_on(a.capacity()) > a.len());
 
-    let free = a.capacity() - a.len();
+    let free = block_on(a.capacity()) - a.len();
     for _ in 0..free {
-        a.insert(item, 0);
+        block_on(a.insert(item, 0));
         item += 1;
     }
 
-    assert_eq!(a.len(), a.capacity());
+    assert_eq!(a.len(), block_on(a.capacity()));
 
     // Insert at capacity should cause allocation.
-    a.insert(item, 0);
-    assert!(a.capacity() > a.len());
+    block_on(a.insert(item, 0));
+    assert!(block_on(a.capacity()) > a.len());
 }
 
 #[test]
 fn insert_into_map_full_of_free_buckets() {
     let m = CHashMap::with_capacity(1);
     for i in 0..100 {
-        m.insert(i, 0);
-        m.remove(&i);
+        block_on(m.insert(i, 0));
+        block_on(m.remove(&i));
     }
 }
 
 #[test]
 fn lookup_borrowed() {
     let m = CHashMap::with_capacity(1);
-    m.insert("v".to_owned(), "value");
-    m.get("v").unwrap();
+    block_on(m.insert("v".to_owned(), "value"));
+    block_on(m.get("v")).unwrap();
 }
