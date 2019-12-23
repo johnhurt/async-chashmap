@@ -42,16 +42,14 @@
 #[cfg(test)]
 mod tests;
 
-use future_parking_lot::rwlock::{FutureRawRwLock, FutureReadable, FutureWriteable, RwLock};
+use future_parking_lot::rwlock::{FutureRawRwLock as RawRwLock, FutureReadable, FutureWriteable, RwLock};
 use lock_api::{RwLockReadGuard as ApiRwLockReadGuard, RwLockWriteGuard as ApiRwLockWriteGuard};
-use owning_ref::{ OwningRef};
-use parking_lot::RawRwLock;
+use owning_ref::{ OwningRef, StableAddress };
 use std::borrow::Borrow;
 use std::collections::hash_map;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{self, AtomicUsize};
 use std::{cmp, fmt, iter, mem, ops};
-use std::ops::Deref;
 
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
@@ -66,8 +64,8 @@ const DEFAULT_INITIAL_CAPACITY: usize = 64;
 /// The lowest capacity a table can have.
 const MINIMUM_CAPACITY: usize = 8;
 
-type RwLockReadGuard<'a, T> = ApiRwLockReadGuard<'a, FutureRawRwLock<RawRwLock>, T>;
-type RwLockWriteGuard<'a, T> = ApiRwLockWriteGuard<'a, FutureRawRwLock<RawRwLock>, T>;
+type RwLockReadGuard<'a, T> = ApiRwLockReadGuard<'a, RawRwLock<RawRwLock>, T>;
+type RwLockWriteGuard<'a, T> = ApiRwLockWriteGuard<'a, RawRwLock<RawRwLock>, T>;
 
 /// A bucket state.
 ///
@@ -658,6 +656,14 @@ impl<K, V> CHashMap<K, V> {
         self.retain(predicate).await
     }
 
+    fn unsafe_deref<'a, T>(&'a self, to_deref: &impl StableAddress<Target = T>) -> &'a T {
+        unsafe { &*( to_deref.deref() as *const T) }
+    }
+
+    fn unsafe_defer_mut<'a, T>(&'a self, to_deref: &impl StableAddress<Target = T>) -> &'a mut T {
+        unsafe { &mut *((to_deref.deref() as *const T) as *mut T) }
+    }
+
     /// Filter the map based on some predicate.
     ///
     /// This tests every entry in the hash map by closure `predicate`. If it returns `true`, the
@@ -713,7 +719,8 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let inner : OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>;
         {
             inner = match OwningRef::new(
-                    unsafe { &*(table_lock.deref() as *const Table<K, V>) }.lookup(key).await)
+                self.unsafe_deref(&table_lock)
+                    .lookup(key).await)
                     .try_map(|x| x.value_ref()) {
                 Ok(owning_ref) => owning_ref,
                 _ => return None,
@@ -743,8 +750,8 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         let bucket : &'a mut Bucket<K, V>;
 
         {
-            bucket_lock = unsafe { &* (table_lock.deref() as *const Table<K, V>) }.lookup_mut(key).await;
-            bucket = unsafe { &mut *((bucket_lock.deref() as *const Bucket<K,V>) as *mut Bucket<K,V>) };
+            bucket_lock = self.unsafe_deref(&table_lock).lookup_mut(key).await;
+            bucket = self.unsafe_defer_mut(&bucket_lock);
         }
 
         let inner = if let &mut Bucket::Contains(_, ref mut val) = bucket {
