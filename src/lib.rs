@@ -498,6 +498,8 @@ pub struct ReadGuard<'a, K: 'a, V: 'a> {
     inner: OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>,
 }
 
+unsafe impl<'a, K, V> Send for ReadGuard<'a, K, V> {}
+
 impl<'a, K, V> ops::Deref for ReadGuard<'a, K, V> {
     type Target = V;
 
@@ -707,12 +709,11 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         // Acquire the read lock and lookup in the table.
 
         let table_lock = self.table.future_read().await;
-        let unsafe_table_ref = table_lock.deref() as *const Table<K, V>;
 
         let inner : OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>;
         {
             inner = match OwningRef::new(
-                    unsafe { &*unsafe_table_ref }.lookup(key).await)
+                    unsafe { &*(table_lock.deref() as *const Table<K, V>) }.lookup(key).await)
                     .try_map(|x| x.value_ref()) {
                 Ok(owning_ref) => owning_ref,
                 _ => return None,
@@ -737,14 +738,16 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     {
 
         let table_lock = self.table.future_read().await;
-        let unsafe_table_ref = table_lock.deref() as *const Table<K, V>;
+        let bucket_lock : RwLockWriteGuard<'a, Bucket<K, V>>;
 
-        let bucket_lock = unsafe { &*unsafe_table_ref }.lookup_mut(key).await;
-        let unsafe_bucket_ref = bucket_lock.deref() as *const Bucket<K,V>;
+        let bucket : &'a mut Bucket<K, V>;
 
-        let inner = unsafe { &mut *(unsafe_bucket_ref as *mut Bucket<K, V>) };
+        {
+            bucket_lock = unsafe { &* (table_lock.deref() as *const Table<K, V>) }.lookup_mut(key).await;
+            bucket = unsafe { &mut *((bucket_lock.deref() as *const Bucket<K,V>) as *mut Bucket<K,V>) };
+        }
 
-        let inner = if let &mut Bucket::Contains(_, ref mut val) = inner {
+        let inner = if let &mut Bucket::Contains(_, ref mut val) = bucket {
             // The bucket contains data.
             val
         } else {
