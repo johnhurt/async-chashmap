@@ -42,7 +42,8 @@
 #[cfg(test)]
 mod tests;
 
-use future_parking_lot::rwlock::{FutureRawRwLock as RawRwLock, FutureReadable, FutureWriteable, RwLock};
+use parking_lot::RawRwLock;
+use future_parking_lot::rwlock::{FutureRawRwLock, FutureReadable, FutureWriteable, RwLock};
 use lock_api::{RwLockReadGuard as ApiRwLockReadGuard, RwLockWriteGuard as ApiRwLockWriteGuard};
 use owning_ref::{ OwningRef, StableAddress };
 use std::borrow::Borrow;
@@ -50,6 +51,7 @@ use std::collections::hash_map;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{self, AtomicUsize};
 use std::{cmp, fmt, iter, mem, ops};
+use std::ops::Deref;
 
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
@@ -64,8 +66,8 @@ const DEFAULT_INITIAL_CAPACITY: usize = 64;
 /// The lowest capacity a table can have.
 const MINIMUM_CAPACITY: usize = 8;
 
-type RwLockReadGuard<'a, T> = ApiRwLockReadGuard<'a, RawRwLock<RawRwLock>, T>;
-type RwLockWriteGuard<'a, T> = ApiRwLockWriteGuard<'a, RawRwLock<RawRwLock>, T>;
+type RwLockReadGuard<'a, T> = ApiRwLockReadGuard<'a, FutureRawRwLock<RawRwLock>, T>;
+type RwLockWriteGuard<'a, T> = ApiRwLockWriteGuard<'a, FutureRawRwLock<RawRwLock>, T>;
 
 /// A bucket state.
 ///
@@ -702,6 +704,16 @@ impl<K, V> CHashMap<K, V> {
 }
 
 impl<K: PartialEq + Hash, V> CHashMap<K, V> {
+
+    pub async fn with<'a, T, Q: ?Sized>(&'a self, key: &Q, action: impl FnOnce(Option<&V>) -> T) -> T
+    where
+        K: Borrow<Q>,
+        Q: Hash + PartialEq {
+
+        action(self.table.future_read().await.lookup(key).await.value_ref().ok())
+
+    }
+
     /// Get the value of some key.
     ///
     /// This will lookup the entry of some key `key`, and acquire the read-only lock. This means
