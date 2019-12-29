@@ -42,16 +42,14 @@
 #[cfg(test)]
 mod tests;
 
-use parking_lot::RawRwLock;
-use future_parking_lot::rwlock::{FutureRawRwLock, FutureReadable, FutureWriteable, RwLock};
-use lock_api::{RwLockReadGuard as ApiRwLockReadGuard, RwLockWriteGuard as ApiRwLockWriteGuard};
-use owning_ref::{ OwningRef, StableAddress };
+use async_std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::collections::hash_map;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{self, AtomicUsize};
 use std::{cmp, fmt, iter, mem, ops};
-use std::ops::Deref;
+
+trait LocalBlah {}
 
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
@@ -66,8 +64,8 @@ const DEFAULT_INITIAL_CAPACITY: usize = 64;
 /// The lowest capacity a table can have.
 const MINIMUM_CAPACITY: usize = 8;
 
-type RwLockReadGuard<'a, T> = ApiRwLockReadGuard<'a, FutureRawRwLock<RawRwLock>, T>;
-type RwLockWriteGuard<'a, T> = ApiRwLockWriteGuard<'a, FutureRawRwLock<RawRwLock>, T>;
+impl <K,V> LocalBlah for Table<K,V> {}
+impl <K,V> LocalBlah for Bucket<K,V> {}
 
 /// A bucket state.
 ///
@@ -262,7 +260,7 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
         for i in 0..self.buckets.len() {
             // Get the lock of the `i`'th bucket after the first priority bucket (wrap on end).
             let lock = self.buckets[(hash + i) % self.buckets.len()]
-                .future_read()
+                .read()
                 .await;
 
             // Check if it is a match.
@@ -291,7 +289,9 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
         // bucket.
         for i in 0..self.buckets.len() {
             // Get the lock of the `i`'th bucket after the first priority bucket (wrap on end).
-            let lock = self.buckets[(hash + i) % self.buckets.len()].future_write().await;
+            let lock = self.buckets[(hash + i) % self.buckets.len()]
+                .write()
+                .await;
 
             // Check if it is a match.
             if matches(&lock) {
@@ -329,7 +329,8 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
                 matches(&bucket)
             } {
                 // Yup. Return.
-                return self.buckets[idx].get_mut();
+                return self.buckets[idx]
+                    .get_mut();
             }
         }
         panic!("`CHashMap` scan_mut_no_lock failed! No entry found.");
@@ -349,7 +350,9 @@ impl<K: PartialEq + Hash, V> Table<K, V> {
         // bucket.
         for i in 0..self.buckets.len() {
             // Get the lock of the `i`'th bucket after the first priority bucket (wrap on end).
-            let lock = self.buckets[(hash + i) % self.buckets.len()].future_write().await;
+            let lock = self.buckets[(hash + i) % self.buckets.len()]
+                .write()
+                .await;
 
             if lock.key_matches(key) {
                 // We found a match.
@@ -493,23 +496,22 @@ impl<K, V> IntoIterator for Table<K, V> {
 /// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
 /// on drop.
 #[allow(dead_code)]
-pub struct ReadGuard<'a, K: 'a, V: 'a> {
+pub struct ReadGuard<'a, K, V> {
     table_lock: RwLockReadGuard<'a, Table<K, V>>,
-    inner: OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>,
+    bucket_lock: RwLockReadGuard<'a, Bucket<K, V>>,
+    inner: &'a V,
 }
-
-unsafe impl<'a, K, V> Send for ReadGuard<'a, K, V> {}
 
 impl<'a, K, V> ops::Deref for ReadGuard<'a, K, V> {
     type Target = V;
 
     fn deref(&self) -> &V {
-        self.inner.as_ref()
+        self.inner
     }
 }
 
 impl<'a, K, V: PartialEq> cmp::PartialEq for ReadGuard<'a, K, V> {
-    fn eq(&self, other: &ReadGuard<'a, K, V>) -> bool {
+    fn eq(&self, other: &ReadGuard<K, V>) -> bool {
         self == other
     }
 }
@@ -526,7 +528,7 @@ impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for ReadGuard<'a, K, V> {
 /// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
 /// on drop.
 #[allow(dead_code)]
-pub struct WriteGuard<'a, K: 'a, V: 'a> {
+pub struct WriteGuard<'a, K, V> {
     table_lock: RwLockReadGuard<'a, Table<K, V>>,
     bucket_lock: RwLockWriteGuard<'a, Bucket<K, V>>,
     inner: &'a mut V
@@ -621,7 +623,10 @@ impl<K, V> CHashMap<K, V> {
     /// from capacity, in the sense that the map cannot hold this number of entries, since it needs
     /// to keep the load factor low.
     pub async fn buckets(&self) -> usize {
-        self.table.future_read().await.buckets.len()
+        self.table.read()
+            .await
+            .buckets
+            .len()
     }
 
     /// Is the hash table empty?
@@ -636,7 +641,10 @@ impl<K, V> CHashMap<K, V> {
     /// It is relatively efficient, although it needs to write lock a RW lock.
     pub async fn clear(&self) -> CHashMap<K, V> {
         // Acquire a writable lock.
-        let mut lock = self.table.future_write().await;
+        let mut lock = self.table
+            .write()
+            .await;
+
         CHashMap {
             // Replace the old table with an empty initial table.
             table: RwLock::new(mem::replace(
@@ -658,11 +666,11 @@ impl<K, V> CHashMap<K, V> {
         self.retain(predicate).await
     }
 
-    fn unsafe_deref<'a, T>(&'a self, to_deref: &impl StableAddress<Target = T>) -> &'a T {
+    fn unsafe_deref<'a, T>(&'a self, to_deref: &impl ops::Deref<Target = T>) -> &'a T {
         unsafe { &*( to_deref.deref() as *const T) }
     }
 
-    fn unsafe_defer_mut<'a, T>(&'a self, to_deref: &impl StableAddress<Target = T>) -> &'a mut T {
+    fn unsafe_deref_mut<'a, T>(&'a self, to_deref: &impl ops::Deref<Target = T>) -> &'a mut T {
         unsafe { &mut *((to_deref.deref() as *const T) as *mut T) }
     }
 
@@ -679,12 +687,18 @@ impl<K, V> CHashMap<K, V> {
         F: Fn(&K, &V) -> bool,
     {
         // Acquire the read lock to the table.
-        let table = self.table.future_read().await;
+        let table = self.table
+            .read()
+            .await;
+
         // Run over every bucket and apply the filter.
         for bucket in &table.buckets {
             // Acquire the read lock, which we will upgrade if necessary.
             // TODO: Use read lock and upgrade later.
-            let mut lock = bucket.future_write().await;
+            let mut lock = bucket
+                .write()
+                .await;
+
             // Skip the free buckets.
             // TODO: Fold the `if` into the `match` when the borrowck gets smarter.
             if match *lock {
@@ -710,7 +724,11 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         K: Borrow<Q>,
         Q: Hash + PartialEq {
 
-        action(self.table.future_read().await.lookup(key).await.value_ref().ok())
+        action(self.table
+            .read()
+            .await
+            .lookup(key)
+            .await.value_ref().ok())
 
     }
 
@@ -726,21 +744,26 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     {
         // Acquire the read lock and lookup in the table.
 
-        let table_lock = self.table.future_read().await;
+        let table_lock = self.table
+            .read()
+            .await;
 
-        let inner : OwningRef<RwLockReadGuard<'a, Bucket<K, V>>, V>;
+        let bucket_lock : RwLockReadGuard<Bucket<K, V>>;
+        let inner : &'a V;
+
         {
-            inner = match OwningRef::new(
-                self.unsafe_deref(&table_lock)
-                    .lookup(key).await)
-                    .try_map(|x| x.value_ref()) {
-                Ok(owning_ref) => owning_ref,
-                _ => return None,
+            bucket_lock = self.unsafe_deref(&table_lock).lookup(key).await;
+            let bucket = self.unsafe_deref(&bucket_lock);
+            inner = if let Bucket::Contains(_, value) = bucket {
+                &value
+            } else {
+                return None
             }
-        };
+        }
 
         Some(ReadGuard {
             table_lock,
+            bucket_lock,
             inner
         })
     }
@@ -756,14 +779,17 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         Q: Hash + PartialEq,
     {
 
-        let table_lock = self.table.future_read().await;
-        let bucket_lock : RwLockWriteGuard<'a, Bucket<K, V>>;
+        let table_lock = self
+            .table
+            .read()
+            .await;
+        let bucket_lock : RwLockWriteGuard<Bucket<K, V>>;
 
         let bucket : &'a mut Bucket<K, V>;
 
         {
             bucket_lock = self.unsafe_deref(&table_lock).lookup_mut(key).await;
-            bucket = self.unsafe_defer_mut(&bucket_lock);
+            bucket = self.unsafe_deref_mut(&bucket_lock);
         }
 
         let inner = if let &mut Bucket::Contains(_, ref mut val) = bucket {
@@ -788,7 +814,10 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         Q: Hash + PartialEq,
     {
         // Acquire the lock.
-        let lock = self.table.future_read().await;
+        let lock = self
+            .table
+            .read()
+            .await;
         // Look the key up in the table
         let bucket = lock.lookup(key).await;
         // Test if it is free or not.
@@ -827,7 +856,10 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         );
 
         // Expand and lock the table. We need to expand to ensure the bounds on the load factor.
-        let lock = self.table.future_read().await;
+        let lock = self.table
+            .read()
+            .await;
+
         {
             // Find the free bucket.
             let mut bucket = lock.find_free(&key).await;
@@ -835,6 +867,7 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
             // Set the bucket to the new KV pair.
             *bucket = Bucket::Contains(key, val);
         }
+
         // Expand the table (we know beforehand that the entry didn't already exist).
         self.expand(lock).await;
     }
@@ -846,7 +879,9 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     pub async fn insert(&self, key: K, val: V) -> Option<V> {
         let ret;
         // Expand and lock the table. We need to expand to ensure the bounds on the load factor.
-        let lock = self.table.future_read().await;
+        let lock = self.table
+            .read()
+            .await;
         {
             // Lookup the key or a free bucket in the inner table.
             let mut bucket = lock.lookup_or_free(&key).await;
@@ -873,7 +908,9 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         G: FnOnce(&mut V),
     {
         // Expand and lock the table. We need to expand to ensure the bounds on the load factor.
-        let lock = self.table.future_read().await;
+        let lock = self.table
+            .read()
+            .await;
         {
             // Lookup the key or a free bucket in the inner table.
             let mut bucket = lock.lookup_or_free(&key).await;
@@ -908,7 +945,9 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         F: FnOnce(Option<V>) -> Option<V>,
     {
         // Expand and lock the table. We need to expand to ensure the bounds on the load factor.
-        let lock = self.table.future_read().await;
+        let lock = self.table
+            .read()
+            .await;
         {
             // Lookup the key or a free bucket in the inner table.
             let mut bucket = lock.lookup_or_free(&key).await;
@@ -954,7 +993,9 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         Q: PartialEq + Hash,
     {
         // Acquire the read lock of the table.
-        let lock = self.table.future_read().await;
+        let lock = self.table
+            .read()
+            .await;
 
         // Lookup the table, mutably.
         let mut bucket = lock.lookup_mut(&key).await;
@@ -982,7 +1023,9 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
         // Get the new length.
         let len = self.len() + additional;
         // Acquire the write lock (needed because we'll mess with the table).
-        let mut lock = self.table.future_write().await;
+        let mut lock = self.table
+            .write()
+            .await;
         // Handle the case where another thread has resized the table while we were acquiring the
         // lock.
         if lock.buckets.len() < len * LENGTH_MULTIPLIER {
@@ -1003,7 +1046,10 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
     /// has a high maximum case).
     pub async fn shrink_to_fit(&self) {
         // Acquire the write lock (needed because we'll mess with the table).
-        let mut lock = self.table.future_write().await;
+        let mut lock = self.table
+            .write()
+            .await;
+
         // Swap the table out with a new table of desired size (multiplied by some factor).
         let table = mem::replace(&mut *lock, Table::with_capacity(self.len()));
         // Fill the new table with the data from the old table.

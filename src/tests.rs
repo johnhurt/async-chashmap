@@ -14,6 +14,10 @@ use std::thread;
 use crate::CHashMap;
 use futures::executor::block_on;
 
+use tokio::runtime::Builder;
+
+use std::time::SystemTime;
+
 #[test]
 fn spam_insert() {
     let m = Arc::new(CHashMap::new());
@@ -472,64 +476,72 @@ fn empty_pop() {
 
 #[test]
 fn lots_of_insertions() {
-    let m = CHashMap::new();
 
-    // Try this a few times to make sure we never screw up the hashmap's internal state.
-    for _ in 0..10 {
-        assert!(m.is_empty());
+    let mut tokio_runtime = Builder::new().threaded_scheduler().build().unwrap();
 
-        for i in 1..1001 {
-            assert!(block_on(m.insert(i, i)).is_none());
+    tokio_runtime.block_on(async {
 
-            for j in 1..i + 1 {
-                let r = block_on(m.get(&j));
-                assert_eq!(*r.unwrap(), j);
+        let m : CHashMap<usize, usize> = CHashMap::new();
+
+        // Try this a few times to make sure we never screw up the hashmap's internal state.
+        for _ in 0..10 {
+            assert!(m.is_empty());
+
+            let mut now = SystemTime::now();
+
+            for i in 1..1001 {
+                assert!(m.insert(i, i).await.is_none());
+
+                for j in 1..i + 1 {
+                    let r = m.get(&j).await;
+                    assert_eq!(*r.unwrap(), j);
+                }
+
+                for j in i + 1..1001 {
+                    assert!(m.with(&j, |v| v.is_none()).await);
+                }
             }
 
-            for j in i + 1..1001 {
-                let r = block_on(m.get(&j));
-                assert_eq!(r, None);
-            }
-        }
-
-        for i in 1001..2001 {
-            assert!(!block_on(m.contains_key(&i)));
-        }
-
-        // remove forwards
-        for i in 1..1001 {
-            assert!(block_on(m.remove(&i)).is_some());
-
-            for j in 1..i + 1 {
-                assert!(!block_on(m.contains_key(&j)));
+            for i in 1001..2001 {
+                assert!(!m.contains_key(&i).await);
             }
 
-            for j in i + 1..1001 {
-                assert!(block_on(m.contains_key(&j)));
-            }
-        }
+            // remove forwards
+            for i in 1..1001 {
+                assert!(m.remove(&i).await.is_some());
 
-        for i in 1..1001 {
-            assert!(!block_on(m.contains_key(&i)));
-        }
+                for j in 1..i + 1 {
+                    assert!(!m.contains_key(&j).await);
+                }
 
-        for i in 1..1001 {
-            assert!(block_on(m.insert(i, i)).is_none());
-        }
-
-        // remove backwards
-        for i in (1..1001).rev() {
-            assert!(block_on(m.remove(&i)).is_some());
-
-            for j in i..1001 {
-                assert!(!block_on(m.contains_key(&j)));
+                for j in i + 1..1001 {
+                    assert!(m.contains_key(&j).await);
+                }
             }
 
-            for j in 1..i {
-                assert!(block_on(m.contains_key(&j)));
+            for i in 1..1001 {
+                assert!(!m.contains_key(&i).await);
+            }
+
+            for i in 1..1001 {
+                assert!(m.insert(i, i).await.is_none());
+            }
+
+            // remove backwards
+            for i in (1..1001).rev() {
+                assert!(m.remove(&i).await.is_some());
+
+                for j in i..1001 {
+                    assert!(!m.contains_key(&j).await);
+                }
+
+                for j in 1..i {
+                    assert!(m.contains_key(&j).await);
+                }
             }
         }
-    }
+    });
+
 }
 
 #[test]
