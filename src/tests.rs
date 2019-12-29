@@ -15,8 +15,6 @@ use crate::CHashMap;
 use futures::executor::block_on;
 
 use tokio::runtime::Builder;
-use tokio::time::delay_for;
-use std::time::Duration;
 
 use std::time::SystemTime;
 
@@ -43,7 +41,7 @@ fn spam_insert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
+                block_on(m.with(&i, |r| assert_eq!(*r.unwrap(), i)));
             }
         }));
     }
@@ -75,7 +73,7 @@ fn spam_insert_new() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
+                block_on(m.with(&i, |r| assert_eq!(*r.unwrap(), i)));
             }
         }));
     }
@@ -108,7 +106,7 @@ fn spam_upsert() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
+                block_on(m.with(&i, |r| assert_eq!(*r.unwrap(), i)));
             }
         }));
     }
@@ -147,9 +145,9 @@ fn spam_alter() {
         let m = m.clone();
         joins.push(thread::spawn(move || {
             for i in t * 2000..(t + 1) * 2000 {
-                assert_eq!(*block_on(m.get(&i)).unwrap(), i);
+                block_on(m.with(&i, |r| assert_eq!(*r.unwrap(), i)));
                 block_on(m.alter(i, |_| None));
-                assert!(block_on(m.get(&i)).is_none());
+                assert!(block_on(m.with(&i, |r| r.is_none())));
             }
         }));
     }
@@ -167,17 +165,17 @@ fn lock_compete() {
 
     let k = m.clone();
     let a = thread::spawn(move || {
-        *block_on(k.get_mut(&"hey")).unwrap() = "hi";
+        block_on(k.with_mut(&"hey", |r| *r.unwrap() = "hi"));
     });
     let k = m.clone();
     let b = thread::spawn(move || {
-        *block_on(k.get_mut(&"hey")).unwrap() = "hi";
+        block_on(k.with_mut(&"hey", |r| *r.unwrap() = "hi"));
     });
 
     a.join().unwrap();
     b.join().unwrap();
 
-    assert_eq!(*block_on(m.get(&"hey")).unwrap(), "hi");
+    block_on(m.with(&"hey", |r| assert_eq!(*r.unwrap(), "hi")));
 }
 
 #[test]
@@ -200,10 +198,11 @@ fn simultanous_reserve() {
         j.join().unwrap();
     }
 
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(m.get(&3)).unwrap(), 6);
-    assert_eq!(*block_on(m.get(&8)).unwrap(), 16);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(m.with(&3, |r| assert_eq!(*r.unwrap(), 6)));
+    block_on(m.with(&8, |r| assert_eq!(*r.unwrap(), 16)));
 }
+
 
 #[test]
 fn create_capacity_zero() {
@@ -223,8 +222,8 @@ fn insert() {
     assert_eq!(m.len(), 1);
     assert!(block_on(m.insert(2, 4)).is_none());
     assert_eq!(m.len(), 2);
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(m.get(&2)).unwrap(), 4);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(m.with(&2, |r| assert_eq!(*r.unwrap(), 4)));
 }
 
 #[test]
@@ -235,8 +234,8 @@ fn upsert() {
     assert_eq!(m.len(), 1);
     block_on(m.upsert(2, || 4, |_| unreachable!()));
     assert_eq!(m.len(), 2);
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(m.get(&2)).unwrap(), 4);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(m.with(&2, |r| assert_eq!(*r.unwrap(), 4)));
 }
 
 #[test]
@@ -246,8 +245,8 @@ fn upsert_update() {
     block_on(m.upsert(1, || unreachable!(), |x| *x += 2));
     block_on(m.insert(2, 3));
     block_on(m.upsert(2, || unreachable!(), |x| *x += 3));
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 4);
-    assert_eq!(*block_on(m.get(&2)).unwrap(), 6);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 4)));
+    block_on(m.with(&2, |r| assert_eq!(*r.unwrap(), 6)));
 }
 
 #[test]
@@ -262,7 +261,7 @@ fn alter_string() {
         Some(x)
     }));
     assert_eq!(m.len(), 1);
-    assert_eq!(&*block_on(m.get(&1)).unwrap(), "a");
+    block_on(m.with(&1, |r| assert_eq!(&*r.unwrap(), "a")));
 }
 
 #[test]
@@ -274,14 +273,14 @@ fn clear() {
 
     let om = block_on(m.clear());
     assert_eq!(om.len(), 2);
-    assert_eq!(*block_on(om.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(om.get(&2)).unwrap(), 4);
+    block_on(om.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(om.with(&2, |r| assert_eq!(*r.unwrap(), 4)));
 
     assert!(m.is_empty());
     assert_eq!(m.len(), 0);
 
-    assert_eq!(block_on(m.get(&1)), None);
-    assert_eq!(block_on(m.get(&2)), None);
+    block_on(m.with(&1, |r| assert_eq!(r, None)));
+    block_on(m.with(&2, |r| assert_eq!(r, None)));
 }
 
 #[test]
@@ -296,8 +295,8 @@ fn clear_with_retain() {
     assert!(m.is_empty());
     assert_eq!(m.len(), 0);
 
-    assert_eq!(block_on(m.get(&1)), None);
-    assert_eq!(block_on(m.get(&2)), None);
+    block_on(m.with(&1, |r| assert_eq!(r, None)));
+    block_on(m.with(&2, |r| assert_eq!(r, None)));
 }
 
 #[test]
@@ -501,8 +500,7 @@ fn lots_of_insertions() {
 
                 let now = SystemTime::now();
                 for j in 1..i + 1 {
-                    let r = m.get(&j).await;
-                    assert_eq!(*r.unwrap(), j);
+                    m.with(&j, |r| assert_eq!(*r.unwrap(), j)).await;
                 }
                 r1_time += now.elapsed().unwrap().as_micros();
 
@@ -585,11 +583,11 @@ fn find_mut() {
     assert!(block_on(m.insert(2, 8)).is_none());
     assert!(block_on(m.insert(5, 14)).is_none());
     let new = 100;
-    match block_on(m.get_mut(&5)) {
+    block_on(m.with_mut(&5, |r| match r {
         None => panic!(),
-        Some(mut x) => *x = new,
-    }
-    assert_eq!(*block_on(m.get(&5)).unwrap(), new);
+        Some(x) => *x = new,
+    }));
+    block_on(m.with(&5, |r| assert_eq!(*r.unwrap(), new)));
 }
 
 #[test]
@@ -598,11 +596,11 @@ fn insert_overwrite() {
     assert_eq!(m.len(), 0);
     assert!(block_on(m.insert(1, 2)).is_none());
     assert_eq!(m.len(), 1);
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
     assert_eq!(m.len(), 1);
     assert!(!block_on(m.insert(1, 3)).is_none());
     assert_eq!(m.len(), 1);
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 3);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 3)));
 }
 
 #[test]
@@ -611,26 +609,26 @@ fn insert_conflicts() {
     assert!(block_on(m.insert(1, 2)).is_none());
     assert!(block_on(m.insert(5, 3)).is_none());
     assert!(block_on(m.insert(9, 4)).is_none());
-    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
-    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    block_on(m.with(&9, |r| assert_eq!(*r.unwrap(), 4)));
+    block_on(m.with(&5, |r| assert_eq!(*r.unwrap(), 3)));
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
 }
 
 #[test]
 fn conflict_remove() {
     let m = CHashMap::with_capacity(4);
     assert!(block_on(m.insert(1, 2)).is_none());
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
     assert!(block_on(m.insert(5, 3)).is_none());
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(m.with(&5, |r| assert_eq!(*r.unwrap(), 3)));
     assert!(block_on(m.insert(9, 4)).is_none());
-    assert_eq!(*block_on(m.get(&1)).unwrap(), 2);
-    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
-    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
+    block_on(m.with(&1, |r| assert_eq!(*r.unwrap(), 2)));
+    block_on(m.with(&5, |r| assert_eq!(*r.unwrap(), 3)));
+    block_on(m.with(&9, |r| assert_eq!(*r.unwrap(), 4)));
     assert!(block_on(m.remove(&1)).is_some());
-    assert_eq!(*block_on(m.get(&9)).unwrap(), 4);
-    assert_eq!(*block_on(m.get(&5)).unwrap(), 3);
+    block_on(m.with(&9, |r| assert_eq!(*r.unwrap(), 4)));
+    block_on(m.with(&5, |r| assert_eq!(*r.unwrap(), 3)));
 }
 
 #[test]
@@ -653,13 +651,12 @@ fn pop() {
 #[test]
 fn find() {
     let m = CHashMap::new();
-    assert!(block_on(m.get(&1)).is_none());
+    assert!(block_on(m.with(&1, |r| r.is_none())));
     block_on(m.insert(1, 2));
-    let lock = block_on(m.get(&1));
-    match lock {
+    block_on(m.with(&1, |r| match r {
         None => panic!(),
         Some(v) => assert_eq!(*v, 2),
-    }
+    }));
 }
 
 #[test]
@@ -706,7 +703,7 @@ fn from_iter() {
     let map: CHashMap<_, _> = xs.iter().cloned().collect();
 
     for &(k, v) in &xs {
-        assert_eq!(*block_on(map.get(&k)).unwrap(), v);
+        block_on(map.with(&k, |r| assert_eq!(*r.unwrap(), v)));
     }
 }
 
@@ -748,5 +745,5 @@ fn insert_into_map_full_of_free_buckets() {
 fn lookup_borrowed() {
     let m = CHashMap::with_capacity(1);
     block_on(m.insert("v".to_owned(), "value"));
-    block_on(m.get("v")).unwrap();
+    block_on(m.with("v", |r| { r.unwrap(); }));
 }

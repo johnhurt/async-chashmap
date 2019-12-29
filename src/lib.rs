@@ -47,7 +47,7 @@ use std::borrow::Borrow;
 use std::collections::hash_map;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{self, AtomicUsize};
-use std::{cmp, fmt, iter, mem, ops};
+use std::{cmp, iter, mem};
 
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
@@ -146,6 +146,22 @@ impl<K, V> Bucket<K, V> {
     /// respectively).
     fn value_ref(&self) -> Result<&V, ()> {
         if let Bucket::Contains(_, ref val) = *self {
+            Ok(val)
+        } else {
+            Err(())
+        }
+    }
+
+    /// Get a reference to the value of the bucket (if any).
+    ///
+    /// This returns a reference to the value of the bucket, if it is a KV pair. If not, it will
+    /// return `None`.
+    ///
+    /// Rather than `Option`, it returns a `Result`, in order to make it easier to work with the
+    /// `owning_ref` crate (`try_new` and `try_map` of `OwningHandle` and `OwningRef`
+    /// respectively).
+    fn value_mut_ref(&mut self) -> Result<&mut V, ()> {
+        if let Bucket::Contains(_, ref mut val) = *self {
             Ok(val)
         } else {
             Err(())
@@ -486,76 +502,6 @@ impl<K, V> IntoIterator for Table<K, V> {
     }
 }
 
-/// A RAII guard for reading an entry of a hash map.
-///
-/// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
-/// on drop.
-#[allow(dead_code)]
-pub struct ReadGuard<'a, K, V> {
-    table_lock: RwLockReadGuard<'a, Table<K, V>>,
-    bucket_lock: RwLockReadGuard<'a, Bucket<K, V>>,
-    inner: &'a V,
-}
-
-impl<'a, K, V> ops::Deref for ReadGuard<'a, K, V> {
-    type Target = V;
-
-    fn deref(&self) -> &V {
-        self.inner
-    }
-}
-
-impl<'a, K, V: PartialEq> cmp::PartialEq for ReadGuard<'a, K, V> {
-    fn eq(&self, other: &ReadGuard<K, V>) -> bool {
-        self == other
-    }
-}
-impl<'a, K, V: Eq> cmp::Eq for ReadGuard<'a, K, V> {}
-
-impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for ReadGuard<'a, K, V> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ReadGuard({:?})", &**self)
-    }
-}
-
-/// A mutable RAII guard for reading an entry of a hash map.
-///
-/// This is an access type dereferencing to the inner value of the entry. It will handle unlocking
-/// on drop.
-#[allow(dead_code)]
-pub struct WriteGuard<'a, K, V> {
-    table_lock: RwLockReadGuard<'a, Table<K, V>>,
-    bucket_lock: RwLockWriteGuard<'a, Bucket<K, V>>,
-    inner: &'a mut V
-}
-
-impl<'a, K, V> ops::Deref for WriteGuard<'a, K, V> {
-    type Target = V;
-
-    fn deref(&self) -> &V {
-        &self.inner
-    }
-}
-
-impl<'a, K, V> ops::DerefMut for WriteGuard<'a, K, V> {
-    fn deref_mut(&mut self) -> &mut V {
-        &mut self.inner
-    }
-}
-
-impl<'a, K, V: PartialEq> cmp::PartialEq for WriteGuard<'a, K, V> {
-    fn eq(&self, other: &WriteGuard<'a, K, V>) -> bool {
-        self == other
-    }
-}
-impl<'a, K, V: Eq> cmp::Eq for WriteGuard<'a, K, V> {}
-
-impl<'a, K: fmt::Debug, V: fmt::Debug> fmt::Debug for WriteGuard<'a, K, V> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "WriteGuard({:?})", &**self)
-    }
-}
-
 /// A concurrent hash map.
 ///
 /// This type defines a concurrent associative array, based on hash tables with linear probing and
@@ -661,14 +607,6 @@ impl<K, V> CHashMap<K, V> {
         self.retain(predicate).await
     }
 
-    fn unsafe_deref<'a, T>(&'a self, to_deref: &impl ops::Deref<Target = T>) -> &'a T {
-        unsafe { &*( to_deref.deref() as *const T) }
-    }
-
-    fn unsafe_deref_mut<'a, T>(&'a self, to_deref: &impl ops::Deref<Target = T>) -> &'a mut T {
-        unsafe { &mut *((to_deref.deref() as *const T) as *mut T) }
-    }
-
     /// Filter the map based on some predicate.
     ///
     /// This tests every entry in the hash map by closure `predicate`. If it returns `true`, the
@@ -727,79 +665,17 @@ impl<K: PartialEq + Hash, V> CHashMap<K, V> {
 
     }
 
-    /// Get the value of some key.
-    ///
-    /// This will lookup the entry of some key `key`, and acquire the read-only lock. This means
-    /// that all other parties are blocked from _writing_ (not reading) this value while the guard
-    /// is held.
-    pub async fn get<'a, Q: ?Sized>(&'a self, key: &Q) -> Option<ReadGuard<'a, K, V>>
+    pub async fn with_mut<'a, T, Q: ?Sized>(&'a self, key: &Q, action: impl FnOnce(Option<&mut V>) -> T) -> T
     where
         K: Borrow<Q>,
-        Q: Hash + PartialEq,
-    {
-        // Acquire the read lock and lookup in the table.
+        Q: Hash + PartialEq {
 
-        let table_lock = self.table
+        action(self.table
             .read()
-            .await;
+            .await
+            .lookup_mut(key)
+            .await.value_mut_ref().ok())
 
-        let bucket_lock : RwLockReadGuard<Bucket<K, V>>;
-        let inner : &'a V;
-
-        {
-            bucket_lock = self.unsafe_deref(&table_lock).lookup(key).await;
-            let bucket = self.unsafe_deref(&bucket_lock);
-            inner = if let Bucket::Contains(_, value) = bucket {
-                &value
-            } else {
-                return None
-            }
-        }
-
-        Some(ReadGuard {
-            table_lock,
-            bucket_lock,
-            inner
-        })
-    }
-
-    /// Get the (mutable) value of some key.
-    ///
-    /// This will lookup the entry of some key `key`, and acquire the writable lock. This means
-    /// that all other parties are blocked from both reading and writing this value while the guard
-    /// is held.
-    pub async fn get_mut<'a, Q: ?Sized>(&'a self, key: &Q) -> Option<WriteGuard<'a, K, V>>
-    where
-        K: Borrow<Q>,
-        Q: Hash + PartialEq,
-    {
-
-        let table_lock = self
-            .table
-            .read()
-            .await;
-        let bucket_lock : RwLockWriteGuard<Bucket<K, V>>;
-
-        let bucket : &'a mut Bucket<K, V>;
-
-        {
-            bucket_lock = self.unsafe_deref(&table_lock).lookup_mut(key).await;
-            bucket = self.unsafe_deref_mut(&bucket_lock);
-        }
-
-        let inner = if let &mut Bucket::Contains(_, ref mut val) = bucket {
-            // The bucket contains data.
-            val
-        } else {
-            // The bucket is empty/removed.
-            return None
-        };
-
-        Some(WriteGuard {
-            table_lock,
-            bucket_lock,
-            inner
-        })
     }
 
     /// Does the hash map contain this key?
