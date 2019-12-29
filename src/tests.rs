@@ -15,6 +15,8 @@ use crate::CHashMap;
 use futures::executor::block_on;
 
 use tokio::runtime::Builder;
+use tokio::time::delay_for;
+use std::time::Duration;
 
 use std::time::SystemTime;
 
@@ -488,23 +490,44 @@ fn lots_of_insertions() {
             assert!(m.is_empty());
 
             let mut now = SystemTime::now();
+            let mut w_time = 0u128;
+            let mut r1_time = 0u128;
+            let mut r2_time = 0u128;
 
             for i in 1..1001 {
+                let now = SystemTime::now();
                 assert!(m.insert(i, i).await.is_none());
+                w_time += now.elapsed().unwrap().as_micros();
 
+                let now = SystemTime::now();
                 for j in 1..i + 1 {
                     let r = m.get(&j).await;
                     assert_eq!(*r.unwrap(), j);
                 }
+                r1_time += now.elapsed().unwrap().as_micros();
+
+                let now = SystemTime::now();
 
                 for j in i + 1..1001 {
                     assert!(m.with(&j, |v| v.is_none()).await);
                 }
+                r2_time += now.elapsed().unwrap().as_micros();
             }
+
+            println!("1 : {:?} - R1: {:?} R2: {:?} W: {:?}",
+                now.elapsed().unwrap().as_millis(),
+                r1_time / 1_000_000u128,
+                r2_time / 1_000_000u128,
+                w_time / 1_000u128);
+
+            now = SystemTime::now();
 
             for i in 1001..2001 {
                 assert!(!m.contains_key(&i).await);
             }
+
+            println!("2 : {:?}", now.elapsed().unwrap().as_millis());
+            now = SystemTime::now();
 
             // remove forwards
             for i in 1..1001 {
@@ -519,13 +542,22 @@ fn lots_of_insertions() {
                 }
             }
 
+            println!("3 : {:?}", now.elapsed().unwrap().as_millis());
+            now = SystemTime::now();
+
             for i in 1..1001 {
                 assert!(!m.contains_key(&i).await);
             }
 
+            println!("4 : {:?}", now.elapsed().unwrap().as_millis());
+            now = SystemTime::now();
+
             for i in 1..1001 {
                 assert!(m.insert(i, i).await.is_none());
             }
+
+            println!("5 : {:?}", now.elapsed().unwrap().as_millis());
+            now = SystemTime::now();
 
             // remove backwards
             for i in (1..1001).rev() {
@@ -539,9 +571,11 @@ fn lots_of_insertions() {
                     assert!(m.contains_key(&j).await);
                 }
             }
+
+            println!("6 : {:?}", now.elapsed().unwrap().as_millis());
+            now = SystemTime::now();
         }
     });
-
 }
 
 #[test]

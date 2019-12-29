@@ -49,8 +49,6 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::atomic::{self, AtomicUsize};
 use std::{cmp, fmt, iter, mem, ops};
 
-trait LocalBlah {}
-
 /// The atomic ordering used throughout the code.
 const ORDERING: atomic::Ordering = atomic::Ordering::Relaxed;
 /// The length-to-capacity factor.
@@ -63,9 +61,6 @@ const MAX_LOAD_FACTOR_DENOM: usize = 100;
 const DEFAULT_INITIAL_CAPACITY: usize = 64;
 /// The lowest capacity a table can have.
 const MINIMUM_CAPACITY: usize = 8;
-
-impl <K,V> LocalBlah for Table<K,V> {}
-impl <K,V> LocalBlah for Bucket<K,V> {}
 
 /// A bucket state.
 ///
